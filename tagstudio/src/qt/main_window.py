@@ -1,11 +1,3 @@
-################################################################################
-# Form generated from reading UI file 'home.ui'
-##
-# Created by: Qt User Interface Compiler version 6.5.1
-##
-# WARNING! All changes made in this file will be lost when recompiling UI file!
-################################################################################
-
 # Copyright (C) 2024 Travis Abendshien (CyanVoxel).
 # Licensed under the GPL-3.0 License.
 # Created for TagStudio: https://github.com/CyanVoxel/TagStudio
@@ -227,14 +219,6 @@ class UIMainWindow(QMainWindow):
         self.thumb_size_combobox.setPlaceholderText(
             QCoreApplication.translate("MainWindow", "Thumbnail Size", None)
         )
-
-    def moveEvent(self, event) -> None:  # noqa: N802
-        # time.sleep(0.02)  # sleep for 20ms
-        pass
-
-    def resizeEvent(self, event) -> None:  # noqa: N802
-        # time.sleep(0.02)  # sleep for 20ms
-        pass
 
     def toggle_landing_page(self, enabled: bool):
         if enabled:
