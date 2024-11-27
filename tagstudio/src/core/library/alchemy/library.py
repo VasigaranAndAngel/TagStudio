@@ -1,52 +1,25 @@
 import re
 import shutil
 import unicodedata
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import makedirs
 from pathlib import Path
-from typing import Any, Iterator, Type
+from typing import Any, Type
 from uuid import uuid4
 
 import structlog
-from sqlalchemy import (
-    URL,
-    Engine,
-    and_,
-    create_engine,
-    delete,
-    exists,
-    func,
-    or_,
-    select,
-    update,
-)
+from sqlalchemy import URL, Engine, and_, create_engine, delete, exists, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import (
-    Session,
-    aliased,
-    contains_eager,
-    make_transient,
-    selectinload,
-)
+from sqlalchemy.orm import Session, aliased, contains_eager, make_transient, selectinload
 
-from ...constants import (
-    BACKUP_FOLDER_NAME,
-    TAG_ARCHIVED,
-    TAG_FAVORITE,
-    TS_FOLDER_NAME,
-)
+from ...constants import BACKUP_FOLDER_NAME, TAG_ARCHIVED, TAG_FAVORITE, TS_FOLDER_NAME
 from ...enums import LibraryPrefs
 from ...media_types import MediaCategories
 from .db import make_tables
 from .enums import FieldTypeEnum, FilterState, TagColor
-from .fields import (
-    BaseField,
-    DatetimeField,
-    TagBoxField,
-    TextField,
-    _FieldID,
-)
+from .fields import BaseField, DatetimeField, TagBoxField, TextField, _FieldID
 from .joins import TagField, TagSubtag
 from .models import Entry, Folder, Preferences, Tag, TagAlias, ValueType
 
@@ -210,6 +183,7 @@ class Library:
             db_version = session.scalar(
                 select(Preferences).where(Preferences.key == LibraryPrefs.DB_VERSION.name)
             )
+            assert db_version is not None
             # if the db version is different, we cant proceed
             if db_version.value != LibraryPrefs.DB_VERSION.default:
                 logger.error(
@@ -310,7 +284,7 @@ class Library:
     @property
     def entries_count(self) -> int:
         with Session(self.engine) as session:
-            return session.scalar(select(func.count(Entry.id)))
+            return session.scalar(select(func.count(Entry.id))) or 0
 
     def get_entries(self, with_joins: bool = False) -> Iterator[Entry]:
         """Load entries without joins."""
@@ -484,7 +458,7 @@ class Library:
             )
 
             query_count = select(func.count()).select_from(statement.alias("entries"))
-            count_all: int = session.execute(query_count).scalar()
+            count_all: int = session.execute(query_count).scalar() or 0
 
             statement = statement.limit(search.limit).offset(search.offset)
 
@@ -683,6 +657,8 @@ class Library:
     def get_value_type(self, field_key: str) -> ValueType:
         with Session(self.engine) as session:
             field = session.scalar(select(ValueType).where(ValueType.key == field_key))
+            if field is None:
+                raise ValueError(f"No field found with key {field_key}.")
             session.expunge(field)
             return field
 
@@ -709,8 +685,10 @@ class Library:
 
         if not field:
             if isinstance(field_id, _FieldID):
-                field_id = field_id.name
-            field = self.get_value_type(field_id)
+                _field_id = field_id.name
+            elif isinstance(field_id, str):
+                _field_id = field_id
+            field = self.get_value_type(_field_id)
 
         field_model: TextField | DatetimeField | TagBoxField
         if field.type in (FieldTypeEnum.TEXT_LINE, FieldTypeEnum.TEXT_BOX):
@@ -860,6 +838,7 @@ class Library:
         with Session(self.engine) as session:
             tags_query = select(Tag).options(selectinload(Tag.subtags), selectinload(Tag.aliases))
             tag = session.scalar(tags_query.where(Tag.id == tag_id))
+            assert tag is not None
 
             session.expunge(tag)
             for subtag in tag.subtags:
@@ -875,6 +854,7 @@ class Library:
             alias_query = select(TagAlias).where(TagAlias.id == alias_id, TagAlias.tag_id == tag_id)
             alias = session.scalar(alias_query.where(TagAlias.id == alias_id))
 
+        assert alias is not None
         return alias
 
     def add_subtag(self, base_id: int, new_tag_id: int) -> bool:
@@ -957,13 +937,17 @@ class Library:
     def prefs(self, key: LibraryPrefs) -> Any:
         # load given item from Preferences table
         with Session(self.engine) as session:
-            return session.scalar(select(Preferences).where(Preferences.key == key.name)).value
+            pref = session.scalar(select(Preferences).where(Preferences.key == key.name))
+            assert pref is not None
+            return pref.value
 
     def set_prefs(self, key: LibraryPrefs, value: Any) -> None:
         # set given item in Preferences table
         with Session(self.engine) as session:
             # load existing preference and update value
             pref = session.scalar(select(Preferences).where(Preferences.key == key.name))
+            if pref is None:
+                raise KeyError(f"Preference {key} does not exist")
             pref.value = value
             session.add(pref)
             session.commit()

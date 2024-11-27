@@ -19,21 +19,14 @@ from collections.abc import Sequence
 from itertools import zip_longest
 from pathlib import Path
 from queue import Queue
+from typing import TYPE_CHECKING
 
 # this import has side-effect of import PySide resources
 import src.qt.resources_rc  # noqa: F401
 import structlog
 from humanfriendly import format_timespan
 from PySide6 import QtCore
-from PySide6.QtCore import (
-    QObject,
-    QSettings,
-    Qt,
-    QThread,
-    QThreadPool,
-    QTimer,
-    Signal,
-)
+from PySide6.QtCore import QObject, QSettings, Qt, QThread, QThreadPool, QTimer, Signal
 from PySide6.QtGui import (
     QAction,
     QColor,
@@ -57,20 +50,10 @@ from PySide6.QtWidgets import (
     QSplashScreen,
     QWidget,
 )
-from src.core.constants import (
-    TAG_ARCHIVED,
-    TAG_FAVORITE,
-    VERSION,
-    VERSION_BRANCH,
-)
+from src.core.constants import TAG_ARCHIVED, TAG_FAVORITE, VERSION, VERSION_BRANCH
 from src.core.driver import DriverMixin
 from src.core.enums import LibraryPrefs, MacroID, SettingItems
-from src.core.library.alchemy.enums import (
-    FieldTypeEnum,
-    FilterState,
-    ItemType,
-    SearchMode,
-)
+from src.core.library.alchemy.enums import FieldTypeEnum, FilterState, ItemType, SearchMode
 from src.core.library.alchemy.fields import _FieldID
 from src.core.library.alchemy.library import LibraryStatus
 from src.core.media_types import MediaCategories
@@ -80,7 +63,7 @@ from src.core.utils.web import strip_web_protocol
 from src.qt.flowlayout import FlowLayout
 from src.qt.helpers.custom_runnable import CustomRunnable
 from src.qt.helpers.function_iterator import FunctionIterator
-from src.qt.main_window import Ui_MainWindow
+from src.qt.main_window import UIMainWindow
 from src.qt.modals.build_tag import BuildTagPanel
 from src.qt.modals.file_extension import FileExtensionModal
 from src.qt.modals.fix_dupes import FixDupeFilesModal
@@ -93,6 +76,9 @@ from src.qt.widgets.panel import PanelModal
 from src.qt.widgets.preview_panel import PreviewPanel
 from src.qt.widgets.progress import ProgressWidget
 from src.qt.widgets.thumb_renderer import ThumbRenderer
+
+if TYPE_CHECKING:
+    from src.core.library import Entry, Library
 
 # SIGQUIT is not defined on Windows
 if sys.platform == "win32":
@@ -129,15 +115,20 @@ class QtDriver(DriverMixin, QObject):
     SIGTERM = Signal()
 
     preview_panel: PreviewPanel
+    modal: PanelModal
 
     def __init__(self, backend, args):
         super().__init__()
+        self.unlinked_modal: FixUnlinkedEntriesModal
+        self.dupe_modal: FixDupeFilesModal
+        self.folders_modal: FoldersToTagsModal
+
         # prevent recursive badges update when multiple items selected
         self.badge_update_lock = False
-        self.lib = backend.Library()
+        self.lib: Library = backend.Library()
         self.rm: ResourceManager = ResourceManager()
         self.args = args
-        self.frame_content = []
+        self.frame_content: list[Entry | None] = []
         self.filter = FilterState()
         self.pages_count = 0
 
@@ -179,7 +170,7 @@ class QtDriver(DriverMixin, QObject):
     def init_workers(self):
         """Init workers for rendering thumbnails."""
         if not self.thumb_threads:
-            max_threads = os.cpu_count()
+            max_threads = os.cpu_count() or 1
             for i in range(max_threads):
                 thread = Consumer(self.thumb_job_queue)
                 thread.setObjectName(f"ThumbRenderer_{i}")
@@ -230,7 +221,7 @@ class QtDriver(DriverMixin, QObject):
         timer.timeout.connect(lambda: None)
 
         # self.main_window = loader.load(home_path)
-        self.main_window = Ui_MainWindow(self)
+        self.main_window = UIMainWindow(self)
         self.main_window.setWindowTitle(self.base_title)
         self.main_window.mousePressEvent = self.mouse_navigation  # type: ignore
         # self.main_window.setStyleSheet(
@@ -254,7 +245,7 @@ class QtDriver(DriverMixin, QObject):
 
         if os.name == "nt":
             appid = "cyanvoxel.tagstudio.9"
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)  # type: ignore
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(appid)  # type: ignore[attr-defined]
 
         if sys.platform != "darwin":
             icon = QIcon()
@@ -277,7 +268,7 @@ class QtDriver(DriverMixin, QObject):
         # file_menu.addAction(QAction('&Open Library', menu_bar))
 
         open_library_action = QAction("&Open/Create Library", menu_bar)
-        open_library_action.triggered.connect(lambda: self.open_library_from_dialog())
+        open_library_action.triggered.connect(self.open_library_from_dialog)
         open_library_action.setShortcut(
             QtCore.QKeyCombination(
                 QtCore.Qt.KeyboardModifier(QtCore.Qt.KeyboardModifier.ControlModifier),
@@ -306,7 +297,7 @@ class QtDriver(DriverMixin, QObject):
         file_menu.addSeparator()
 
         # refresh_lib_action = QAction('&Refresh Directories', self.main_window)
-        # refresh_lib_action.triggered.connect(lambda: self.lib.refresh_dir())
+        # refresh_lib_action.triggered.connect(self.lib.refresh_dir)
         add_new_files_action = QAction("&Refresh Directories", menu_bar)
         add_new_files_action.triggered.connect(
             lambda: self.callback_library_needed_check(self.add_new_files_callback)
@@ -328,7 +319,7 @@ class QtDriver(DriverMixin, QObject):
 
         # Edit Menu ============================================================
         new_tag_action = QAction("New &Tag", menu_bar)
-        new_tag_action.triggered.connect(lambda: self.add_tag_action_callback())
+        new_tag_action.triggered.connect(self.add_tag_action_callback)
         new_tag_action.setShortcut(
             QtCore.QKeyCombination(
                 QtCore.Qt.KeyboardModifier(QtCore.Qt.KeyboardModifier.ControlModifier),
@@ -364,7 +355,7 @@ class QtDriver(DriverMixin, QObject):
         edit_menu.addAction(manage_file_extensions_action)
 
         tag_database_action = QAction("Manage Tags", menu_bar)
-        tag_database_action.triggered.connect(lambda: self.show_tag_database())
+        tag_database_action.triggered.connect(self.show_tag_database)
         edit_menu.addAction(tag_database_action)
 
         check_action = QAction("Open library on start", self)
@@ -397,7 +388,7 @@ class QtDriver(DriverMixin, QObject):
         tools_menu.addAction(fix_dupe_files_action)
 
         # create_collage_action = QAction("Create Collage", menu_bar)
-        # create_collage_action.triggered.connect(lambda: self.create_collage())
+        # create_collage_action.triggered.connect(self.create_collage)
         # tools_menu.addAction(create_collage_action)
 
         # Macros Menu ==========================================================
@@ -688,7 +679,11 @@ class QtDriver(DriverMixin, QObject):
         )
         pw.show()
 
-        iterator = FunctionIterator(lambda: tracker.refresh_dir(self.lib.library_dir))
+        iterator = FunctionIterator(
+            lambda: tracker.refresh_dir(self.lib.library_dir)
+            if self.lib.library_dir is not None
+            else None
+        )
         iterator.value.connect(
             lambda x: (
                 pw.update_progress(x + 1),
@@ -787,6 +782,7 @@ class QtDriver(DriverMixin, QObject):
     def run_macro(self, name: MacroID, grid_idx: int):
         """Run a specific Macro on an Entry given a Macro name."""
         entry = self.frame_content[grid_idx]
+        assert self.lib.library_dir is not None and entry is not None
         ful_path = self.lib.library_dir / entry.path
         source = entry.path.parts[0]
 
@@ -814,7 +810,7 @@ class QtDriver(DriverMixin, QObject):
                 )
 
         elif name == MacroID.BUILD_URL:
-            url = TagStudioCore.build_url(entry.id, source)
+            url = TagStudioCore.build_url(entry, source)
             self.lib.add_entry_field_type(entry.id, field_id=_FieldID.SOURCE, value=url)
         elif name == MacroID.MATCH:
             TagStudioCore.match_conditions(self.lib, entry.id)
@@ -823,6 +819,7 @@ class QtDriver(DriverMixin, QObject):
                 if field.type.type == FieldTypeEnum.TEXT_LINE and field.value:
                     self.lib.update_entry_field(
                         entry_ids=entry.id,
+                        field=field,
                         content=strip_web_protocol(field.value),
                     )
 
@@ -861,7 +858,7 @@ class QtDriver(DriverMixin, QObject):
         elif event.button() == Qt.MouseButton.BackButton:
             self.page_move(-1)
 
-    def page_move(self, delta: int = None, page_id: int = None) -> None:
+    def page_move(self, delta: int | None = None, page_id: int | None = None) -> None:
         """Navigate a step further into the navigation stack."""
         logger.info(
             "page_move",
@@ -878,7 +875,9 @@ class QtDriver(DriverMixin, QObject):
         # sb: QScrollArea = self.main_window.scrollArea
         # sb_pos = sb.verticalScrollBar().value()
 
-        page_index = page_id if page_id is not None else self.filter.page_index + delta
+        page_index = (
+            page_id if page_id is not None else (self.filter.page_index or 1) + (delta or 0)
+        )
         page_index = max(0, min(page_index, self.pages_count - 1))
 
         self.filter.page_index = page_index
@@ -895,7 +894,7 @@ class QtDriver(DriverMixin, QObject):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         # TODO - init after library is loaded, it can have different page_size
-        for grid_idx in range(self.filter.page_size):
+        for grid_idx in range(self.filter.page_size or 0):
             item_thumb = ItemThumb(
                 None, self.lib, self, (self.thumb_size, self.thumb_size), grid_idx
             )
@@ -1037,6 +1036,7 @@ class QtDriver(DriverMixin, QObject):
                 item_thumb.hide()
                 continue
 
+            assert self.lib.library_dir is not None
             filepath = self.lib.library_dir / entry.path
             item_thumb = self.item_thumbs[idx]
             item_thumb.set_mode(ItemType.ENTRY)
@@ -1081,7 +1081,7 @@ class QtDriver(DriverMixin, QObject):
                 )
             )
 
-    def update_badges(self, grid_item_ids: Sequence[int] = None):
+    def update_badges(self, grid_item_ids: Sequence[int] | None = None):
         if not grid_item_ids:
             # no items passed, update all items in grid
             grid_item_ids = range(min(len(self.item_thumbs), len(self.frame_content)))
@@ -1121,11 +1121,15 @@ class QtDriver(DriverMixin, QObject):
             )
 
         # update page content
-        self.frame_content = results.items
+        self.frame_content = list(results.items)
         self.update_thumbs()
 
         # update pagination
-        self.pages_count = math.ceil(results.total_count / self.filter.page_size)
+        if self.filter.page_size is not None:
+            self.pages_count = math.ceil(results.total_count / self.filter.page_size)
+        else:
+            self.pages_count = 0
+        assert self.filter.page_index is not None
         self.main_window.pagination.update_buttons(
             self.pages_count, self.filter.page_index, emit=False
         )
